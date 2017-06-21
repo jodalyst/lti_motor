@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="https://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.3/jquery.min.js"></script>
+<link rel="stylesheet" href="./css/notes.css">
+<link rel="stylesheet" href="./css/gui.css">
+
+<script type="text/javascript" async
+  src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML">
+</script>
+
+</head>
+
+
+<body>
+
+<style>
+#motor_box
+{
+    margin: auto;
+    margin-left: 30px;
+    margin-top: 30px;
+    width: 300px;
+    border: 1px solid #ccc;
+}
+#container {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+}
+</style>
+<center><h1>Random Work</h1><p><a href="../index.html">Back to Main Page</a></p></center>
+<p>In 2016, when trying to add more interactive simulations for learning about controls, I started to experiment with animations in Javascript and using the D3 package among other things.  One of the earliest developments from these experiments was this motor simulation shown below. It is a sort of first-pass at a web-embedded discrete time simulator. I wanted a flexible real-time animation of a motor with first-order speed dynamics.  .</p>
+Desired Speed (deg/sec): <input type="text" id="desired_speed" name="desired_speed" value="5"><br>
+<button class="motor_button" id="motor_button">TURN ON</button>
+<h3>Current Velocity (deg/sec):</h3>
+<p id="curr_vel">0.0</p>
+<center>
+<div id="container">
+<div id="motor_box"></div>
+<div class="sbs">
+    <div class="plot_title"><h4>Motor Velocity</h4></div>
+    <div id="plotbox" class="chart"></div>
+</div>
+</div>
+</center>
+<p>The motor is comprised of two elements: a rotating beam shape and a stationary circle shape.  The beam rotates based off of a simple discrete time velocity integrator, updating the rotational angle of the beam at every time step.  Velocity follows first order dynamics and this number affects the two shapes differently.  The rotated beam is incremented on every time step of duration \(T\) by an amount \(vT\).  However, beyond a certain speed this will look no more "fast" than at many lower speeds, so to simulate the effect of blur of motion from the high spinning propeller, the second circle's alpha value is gradually changed to increase its opaqueness.</p>
+
+<p>On every time step, the velocity is updated using the following:
+\[
+v[n] = pv[n-1]+ Ta[n-1]
+\]
+where \(v\) is the velocity, \(p\) is the system pole, \(T\) is the time step, and \(a\) is the acceleration applied to the system.  The \(n\) nad \(n-1\) notation indicates the current and previous values of the simulation (since the simulation is nothing more than a continuous loop of updating numbers). 
+
+<p>The user-specified desired speed is given in terms of degrees per second and that is then backwards calculated from the steady-state analysis of the difference equation into transfer function:</p>
+<p>If as above,
+
+\[
+v[n] = pv[n-1]+ Ta[n-1]
+\]
+
+then at steady state \(n \approx n-1 := n_{\infty}\).  As a result:
+\[
+v[n_{\infty}] = pv[n_{\infty}] + Ta[n_{\infty}]
+\]
+
+Since we'l treat our acceleration as simply a step input, then we can solve for the acceleration we need to apply via the following:
+\[
+a_{des} = \frac{\left(1-p\right)}{T}v_{des}
+\]
+This value is then applied as the command input to the system when running.
+
+<h3>Conclusions</h3>
+
+<p>All this math might seem excessive, and in truth the original version was more of a hack, but a key motivation in developing these things is to make sure they modular in the context of a control simulation and therefore proper difference equation compatibility was necessary.</p>
+
+<h3>Where to Go:</h3>
+<p>An obvious extension of this would be to wrap the entire structure and supporting code into a closure or something so that we could place multiple motors in place on a given page. Depending on what direction this takes, I'll either update this page or link to further work.</p>
+
+
+<script>
+$(document).ready(function(){    
+    $("#motor_button").click(function(event){
+        var text = $("#motor_button").text();
+        desired_speed = parseFloat($("#desired_speed").val());
+        desired_accel = (1-pole)*desired_speed/(0.001*step_size);
+        if (isNaN(desired_speed)){
+            desired_speed = 0;
+        }
+        if (text == "TURN ON"){
+            $("#motor_button").html("TURN OFF");
+            run_motor(true);
+        }else{
+            $("#motor_button").html("TURN ON");
+            desired_speed = 0;
+            desired_accel = 0;
+            run_motor(false);
+        }
+        $("#desired_speed").val(desired_speed);
+    });
+    $("#desired_speed").change(function(){
+        desired_speed = parseFloat($(this).val());
+        desired_accel = (1-pole)*desired_speed/(0.001*step_size);
+        if (isNaN(desired_speed)){
+            desired_speed=0;
+        }
+        $("#desired_speed").val(desired_speed);
+        run_motor(motor_run);
+    });
+});
+
+
+var motor_run = false;
+var desired_speed = 0;
+var x_pos = 10;
+var y_pos = 140;
+var rot = 0;
+
+//Some Constants below:
+var MOTOR_BLADES_LENGTH = 250;
+var MOTOR_BLADES_WIDTH = 15;
+var OFFSET_X = 150;
+var OFFSET_Y = 150;
+var motor_svg = d3.select("#motor_box").append("svg").attr("width",300).attr("height",300);
+var motor_group = motor_svg.append("g").attr("transform","translate("+OFFSET_X+","+OFFSET_Y+")");
+
+var blades  = motor_group.append("rect")
+            .attr("width",MOTOR_BLADES_LENGTH)
+            .attr("height",MOTOR_BLADES_WIDTH)
+            .attr("y", -MOTOR_BLADES_WIDTH*0.5)
+            .attr("x",MOTOR_BLADES_LENGTH*-0.5)
+            .style("opacity",1);
+
+var blur = motor_group.append("circle")
+            .attr("r",MOTOR_BLADES_LENGTH*0.5)
+            .attr("cx",0)
+            .attr("cy",0).style("opacity",0.0);
+
+var blade_angle = 0;
+var step_size = 16;
+var actual_vel = 0;
+var desired_accel = 0;
+var pole = 0.97
+var max_blur_vel = 10000;
+var PLOT_HEIGHT = 200;
+var PLOT_WIDTH = 300;
+
+var plot = new LWChart("plotbox","red",[0,100],PLOT_HEIGHT,PLOT_WIDTH,600);
+
+$(document).on("click", ".scaler",function(){
+    //var parent = $($(this).parent().parent().attr("id"));
+    //var parent = plot_handlers[$(this).parent().parent().attr("id")];
+    var parent = plot;
+    //console.log($(this).attr("id"));
+    var parid = $(this).parent().parent().attr("id")
+    switch ($(this).attr("id")){
+        case parid+"VM":
+            var parent_range = parent.y_range[1] - parent.y_range[0];
+            var parent_mid = (parent.y_range[1] - parent.y_range[0])/2 + parent.y_range[0];
+            parent.y_range[1] = (parent.y_range[1] - parent_mid)*2+parent_mid;
+            parent.y_range[0] = parent_mid-(parent_mid - parent.y_range[0])*2;
+            break;
+        case parid+"VP":
+            var parent_range = parent.y_range[1] - parent.y_range[0];
+            var parent_mid = (parent.y_range[1] - parent.y_range[0])/2 + parent.y_range[0];
+            parent.y_range[1] = (parent.y_range[1] - parent_mid)*0.5+parent_mid;
+            parent.y_range[0] = parent_mid-(parent_mid - parent.y_range[0])*0.5;
+            break;
+        case parid+"RS":
+            parent.y_range =parent.y_range_orig.slice(0); 
+            break;
+        case parid+"OD":
+            var diff = parent.y_range[1] - parent.y_range[0];
+            var tp = diff*0.1;
+            parent.y_range[1] = parent.y_range[1]+tp;
+            parent.y_range[0]=parent.y_range[0]+tp;
+            break;
+        case parid+"OI":
+            var diff = parent.y_range[1] - parent.y_range[0];
+            var tp = diff*0.1;
+            parent.y_range[1] = parent.y_range[1]-tp;
+            parent.y_range[0] = parent.y_range[0]-tp;
+            break;
+    }
+    parent.update();
+});
+
+run_motor = function(run_yn){
+    if (run_yn){
+        command_vel = desired_speed;
+        if (! motor_run){
+            motor_run = true;
+            var timer;
+            timer = setInterval(function(){
+                actual_vel = pole*actual_vel + desired_accel*step_size*0.001;
+                // var incr = (1-pole)*(Math.abs(command_vel - actual_vel));
+                // if (command_vel < actual_vel){
+                //    actual_vel = actual_vel - incr; 
+                // }else{
+                //     actual_vel = actual_vel + incr;
+                // }
+                var move_size = actual_vel*0.001*step_size;
+                blade_angle = blade_angle+ move_size;
+                blade_angle = blade_angle%360;
+                var blur_amount = Math.min(Math.abs(actual_vel/max_blur_vel),1.0);
+                blades.style("opacity",1-0.9*blur_amount);
+                blur.style("opacity",0.1*blur_amount);
+                motor_group.attr("transform", "translate("+OFFSET_X+","+OFFSET_Y+") rotate("+blade_angle+")");
+                if (! motor_run){
+                    clearInterval(timer);
+                }
+                $("#curr_vel").html(actual_vel.toPrecision(4));
+                plot.step(actual_vel);
+                if (command_vel ==0 && Math.abs(actual_vel)< 0.001){
+                    motor_run = false;
+                    $("#curr_vel").html("0.0");
+                }
+            },step_size);
+        }
+    }
+    else{
+        command_vel = 0;
+    }
+}
+
+
+var plots = new Array();
+
+function plot_generate(name,min,max,datapoints){
+    var newb = document.createElement("div"); //create div
+    $(newb).addClass("sbs"); //make it sbs
+    var newtitle = document.createElement("div"); //make inside div
+    $(newtitle).addClass("plot_title").html(name); //make it title
+    var newplot = document.createElement("div"); //make another div
+    $(newplot).addClass("chart"); //make it a chart
+    $(newplot).prop('id',name); //call it appropriate name
+    $(newtitle).appendTo($(newb)); //add into sbs div
+    $(newplot).appendTo($(newb)); //add into sbs div
+    plots.push({'name':name,'plot':newb,'min':min, 'max':max, 'datapoints':datapoints});  //add entry to array.
+}
+
+function LWChart(div_id,color,y_range,height,width,vals){
+    this.div_id = div_id;
+    this.color = color;
+    this.y_range_orig = y_range.slice(0); //used for reset mechanisms.
+    this.y_range = y_range;
+    this.vals = vals;
+    this.margin = {top: 20, right: 30, bottom: 30, left: 40};
+    this.data = d3.range(this.vals).map(function() { return 0; });
+    this.height = height - this.margin.top - this.margin.bottom;
+    this.width = width - this.margin.right - this.margin.left; 
+    this.setup = function(){
+        this.chart = d3.select("#"+this.div_id).append("svg")
+        .attr("id","svg_for_"+this.div_id).attr("width",width).attr("height",height).attr('style',"display:inline-block;").attr("class", "gsc");
+        this.y = d3.scale.linear().domain([this.y_range[0],this.y_range[1]]).range([this.height,0]);
+        this.x = d3.scale.linear().domain([0,this.vals-1]).range([0,this.width]);
+        this.x_axis = d3.svg.axis().scale(this.x).orient("bottom").ticks(20);
+        this.y_axis = d3.svg.axis().scale(this.y).orient("left").ticks(11);
+        this.x_grid = d3.svg.axis().scale(this.x).orient("bottom").ticks(20).tickSize(-this.height, 0, 0).tickFormat("");
+        this.y_grid = d3.svg.axis().scale(this.y).orient("left").ticks(11).tickSize(-this.width, 0, 0).tickFormat("");
+        this.chart.append("g").attr("transform","translate("+this.margin.left +","+ this.margin.top + ")");
+        this.chart.append("g").attr("class", "x axis")
+        .attr("transform","translate("+this.margin.left+","+(this.height+this.margin.top)+")").call(this.x_axis);
+        this.chart.append("g").attr("class", "y axis").attr("transform","translate("+this.margin.left+","+this.margin.top+")").call(this.y_axis); 
+        this.chart.append("g").attr("class", "grid")
+        .attr("transform","translate("+this.margin.left+","+(this.height+this.margin.top)+")").call(this.x_grid);
+        this.chart.append("g").attr("class", "grid").attr("transform","translate("+this.margin.left+","+this.margin.top+")").call(this.y_grid);
+        this.line = d3.svg.line().x(function(d, i) { return this.x(i)+this.margin.left; }.bind(this)).
+        y(function(d, i) { return this.y(d)+this.margin.top; }.bind(this));
+        this.clip_id = "clipper_"+this.div_id;
+        this.clipper = this.chart.append("clipPath").attr("id", this.clip_id)
+        .append("rect").attr("x",this.margin.left).attr("y",this.margin.top)
+        .attr("width",this.width).attr("height",this.height);
+        this.trace = this.chart.append("g").append("path").datum(this.data).attr("class","line")
+        .attr("d",this.line).attr("clip-path", "url(#"+this.clip_id+")");
+        }; 
+    this.setup();
+    //console.log(this.div_id);
+    $("#"+this.div_id).prepend("<div class ='button_container' id = \""+this.div_id+"BC2\" >"); 
+    $("#"+this.div_id+"BC2").append("<button class='scaler' id=\""+this.div_id+"VP\">Z+</button><br>");
+    $("#"+this.div_id+"BC2").append("<button class='scaler' id=\""+this.div_id+"RS\">RS</button><br>");
+    $("#"+this.div_id+"BC2").append("<button class='scaler' id=\""+this.div_id+"VM\">Z-</button><br>");
+    $("#"+this.div_id).prepend("<div class ='button_container' id = \""+this.div_id+"BC1\" >"); 
+    $("#"+this.div_id+"BC1").append("<button class='scaler' id=\""+this.div_id+"OI\">O+</button><br>");
+    $("#"+this.div_id+"BC1").append("<button class='scaler' id=\""+this.div_id+"OD\">O-</button><br>");
+    this.step = function(value){
+            this.data.push(value);
+            this.trace.attr("d",this.line).attr("transform",null).transition().duration(2).ease("linear").attr("transform","translate("+this.x(-1)+",0)");
+            this.data.shift();
+    };
+    this.update = function(){
+        d3.select("#svg_for_"+this.div_id).remove();
+        this.setup();
+    };
+};
+
+
+</script>
+<center><p>Last Edited 5/12/2017 jds</p></center>
+</body>
+</html>
+
